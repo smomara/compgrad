@@ -254,6 +254,16 @@ fn Value(comptime T: type) type {
                 try expect(d.left.?.data == 3);
             }
         }
+
+        test "Value backward" {
+            var a = Value(T).init(2);
+            var b = Value(T).init(3);
+            var c = a.mul(b);
+            var d = c.add(b);
+            var e = d.pow(2);
+
+            e.backward();
+        }
     };
 }
 

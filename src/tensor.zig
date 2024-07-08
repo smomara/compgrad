@@ -1,9 +1,7 @@
 const std = @import("std");
-const math = std.math;
 const expect = std.testing.expect;
-const assert = std.debug.assert;
 
-fn Tensor(comptime T: type, comptime len: comptime_int) type {
+pub fn Tensor(comptime T: type, comptime len: comptime_int) type {
     comptime {
         switch (@typeInfo(T)) {
             .Float => {},
@@ -530,9 +528,8 @@ fn Tensor(comptime T: type, comptime len: comptime_int) type {
     };
 }
 
-test "Value struct" {
-    comptime std.testing.refAllDecls(Tensor(f16, 4));
-    comptime std.testing.refAllDecls(Tensor(f32, 4));
-    comptime std.testing.refAllDecls(Tensor(f64, 4));
-    comptime std.testing.refAllDecls(Tensor(f128, 4));
+test "Tensor" {
+    inline for ([_]type{ f16, f32, f64, f128 }) |FloatType| {
+        std.testing.refAllDecls(Tensor(FloatType, 4));
+    }
 }

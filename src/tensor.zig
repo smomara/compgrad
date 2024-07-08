@@ -509,20 +509,55 @@ pub fn Tensor(comptime T: type, comptime len: comptime_int) type {
         }
 
         test "Tensor backward" {
+
+            // got values from pytorch:
+            //
+            //      import torch
+            //
+            //      len = 4
+            //
+            //      a = torch.tensor([1, 2, 3, 4], dtype=torch.float32, requires_grad=True)
+            //      b = torch.tensor([9, 8, 7, 6], dtype=torch.float32, requires_grad=True)
+            //
+            //      c = a * b
+            //      c.retain_grad()
+            //
+            //      d = c + b
+            //      d.retain_grad()
+            //
+            //      e = d ** 2
+            //
+            //      e.backward(torch.ones(len))
+            //
+            //      print(a.grad) # tensor([324., 384., 392., 360.])
+            //      print(b.grad) # tensor([ 72., 144., 224., 300.])
+            //      print(c.grad) # tensor([36., 48., 56., 60.])
+            //      print(d.grad) # tensor([36., 48., 56., 60.])
+
             comptime {
-                var a = Tensor(T, len).init(2);
-                var b = Tensor(T, len).init(3);
+                var a = Tensor(T, len).init([_]T{ 1, 2, 3, 4 });
+                var b = Tensor(T, len).init([_]T{ 9, 8, 7, 6 });
                 var c = a.mul(&b);
                 var d = c.add(&b);
                 var e = d.pow(2);
 
                 e.backward();
 
-                try expect(@reduce(.And, @abs(a.grad - @as(VecT, @splat(54))) < @as(VecT, @splat(1e-6))));
-                try expect(@reduce(.And, @abs(b.grad - @as(VecT, @splat(54))) < @as(VecT, @splat(1e-6))));
-                try expect(@reduce(.And, @abs(c.grad - @as(VecT, @splat(18))) < @as(VecT, @splat(1e-6))));
-                try expect(@reduce(.And, @abs(d.grad - @as(VecT, @splat(18))) < @as(VecT, @splat(1e-6))));
-                try expect(@reduce(.And, @abs(e.grad - @as(VecT, @splat(1))) < @as(VecT, @splat(1e-6))));
+                const tolerance = switch (@typeInfo(T)) {
+                    .Float => |float| switch (float.bits) {
+                        16 => 1,
+                        32 => 1e-4,
+                        64 => 1e-8,
+                        128 => 1e-12,
+                        else => @compileError("Unsupported float type"),
+                    },
+                    else => @compileError("T must be a float type"),
+                };
+
+                try expect(@reduce(.And, @abs(a.grad - VecT{ 324, 384, 392, 360 }) < @as(VecT, @splat(tolerance))));
+                try expect(@reduce(.And, @abs(b.grad - VecT{ 72, 144, 224, 300 }) < @as(VecT, @splat(tolerance))));
+                try expect(@reduce(.And, @abs(c.grad - VecT{ 36, 48, 56, 60 }) < @as(VecT, @splat(tolerance))));
+                try expect(@reduce(.And, @abs(d.grad - VecT{ 36, 48, 56, 60 }) < @as(VecT, @splat(tolerance))));
             }
         }
     };

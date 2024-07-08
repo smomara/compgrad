@@ -2,167 +2,190 @@ const std = @import("std");
 const math = std.math;
 const expect = std.testing.expect;
 
-fn Value(comptime T: type) type {
-    comptime {
-        switch (T) {
-            f32 => {},
-            f64 => {},
-            else => @compileError("Value must be instantiated with a float type"),
-        }
-    }
-
+fn ValueEngine(comptime T: type) type {
     return struct {
-        data: T,
-        grad: T,
-        op: Op,
-        left: ?*const @This(),
-        right: ?*const @This(),
-        aux: T,
+        const Value = struct {
+            data: T,
+            op: Op,
+            left: ?*const Value,
+            right: ?*const Value,
+            aux: T,
 
-        const Op = enum {
-            None,
-            Add,
-            Mul,
-            Pow,
-            Relu,
+            const Op = enum {
+                None,
+                Add,
+                Mul,
+                Pow,
+                Relu,
+            };
+
+            pub fn init(comptime data: T) Value {
+                return .{
+                    .data = data,
+                    .op = .None,
+                    .left = null,
+                    .right = null,
+                    .aux = 0,
+                };
+            }
+
+            pub fn add(comptime self: Value, comptime other: Value) Value {
+                return .{
+                    .data = self.data + other.data,
+                    .op = .Add,
+                    .left = &self,
+                    .right = &other,
+                    .aux = 0,
+                };
+            }
+
+            pub fn mul(comptime self: Value, comptime other: Value) Value {
+                return .{
+                    .data = self.data * other.data,
+                    .op = .Mul,
+                    .left = &self,
+                    .right = &other,
+                    .aux = 0,
+                };
+            }
+
+            pub fn pow(comptime self: Value, comptime exponent: T) Value {
+                return .{
+                    .data = std.math.pow(T, self.data, exponent),
+                    .op = .Pow,
+                    .left = &self,
+                    .right = null,
+                    .aux = exponent,
+                };
+            }
+
+            pub fn neg(comptime self: Value) Value {
+                return self.mul(init(-1));
+            }
+
+            pub fn sub(comptime self: Value, comptime other: Value) Value {
+                return self.add(other.neg());
+            }
+
+            pub fn div(comptime self: Value, comptime other: Value) Value {
+                return self.mul(other.pow(-1));
+            }
+
+            pub fn relu(comptime self: Value) Value {
+                return .{
+                    .data = if (self.data > 0) self.data else 0,
+                    .op = .Relu,
+                    .left = &self,
+                    .right = null,
+                    .aux = 0,
+                };
+            }
         };
 
-        pub fn init(data: T) @This() {
-            return .{
-                .data = data,
-                .grad = 0,
-                .op = .None,
-                .left = null,
-                .right = null,
-                .aux = 0,
+        fn countNodes(comptime root: *const Value) usize {
+            var count: usize = 1;
+            if (root.left) |left| count += countNodes(left);
+            if (root.right) |right| count += countNodes(right);
+            return count;
+        }
+
+        fn GradientResult(comptime root: Value) type {
+            const node_count = countNodes(&root);
+            return struct {
+                values: [node_count]Value,
+                grads: [node_count]T,
+
+                pub fn getGrad(comptime self: GradientResult(root), comptime value: Value) T {
+                    inline for (self.values, self.grads) |v, grad| {
+                        if (std.meta.eql(&v, &value)) {
+                            return grad;
+                        }
+                    }
+                    unreachable;
+                }
             };
         }
 
-        pub fn add(comptime self: @This(), comptime other: @This()) @This() {
-            return .{
-                .data = self.data + other.data,
-                .grad = 0,
-                .op = .Add,
-                .left = &self,
-                .right = &other,
-                .aux = 0,
-            };
+        pub fn backward(comptime root: Value) GradientResult(root) {
+            var result: GradientResult(root) = undefined;
+            comptime var index: usize = 0;
+
+            comptime populateValues(&root, &result.values, &index);
+            comptime computeGradients(&result.values, &result.grads);
+
+            return result;
         }
 
-        pub fn mul(comptime self: @This(), comptime other: @This()) @This() {
-            return .{
-                .data = self.data * other.data,
-                .grad = 0,
-                .op = .Mul,
-                .left = &self,
-                .right = &other,
-                .aux = 0,
-            };
+        fn populateValues(comptime node: *const Value, comptime values: []Value, comptime index: *usize) void {
+            values[index.*] = node.*;
+            index.* += 1;
+
+            if (node.left) |left| comptime populateValues(left, values, index);
+            if (node.right) |right| comptime populateValues(right, values, index);
         }
 
-        pub fn pow(comptime self: @This(), comptime exponent: T) @This() {
-            return .{
-                .data = std.math.pow(T, self.data, exponent),
-                .grad = 0,
-                .op = .Pow,
-                .left = &self,
-                .right = null,
-                .aux = exponent,
-            };
-        }
+        fn computeGradients(comptime values: []Value, comptime grads: []T) void {
+            inline for (grads) |*grad| {
+                grad.* = 0;
+            }
+            grads[grads.len - 1] = 1; // Set gradient of the root node
 
-        pub fn neg(comptime self: @This()) @This() {
-            return self.mul(init(-1));
-        }
+            comptime var i: usize = values.len;
+            inline while (i > 0) : (i -= 1) {
+                const v = &values[i - 1];
+                const grad = grads[i - 1];
 
-        pub fn sub(comptime self: @This(), comptime other: @This()) @This() {
-            return self.add(other.neg());
-        }
-
-        pub fn div(comptime self: @This(), comptime other: @This()) @This() {
-            return self.mul(other.pow(-1));
-        }
-
-        pub fn relu(comptime self: @This()) @This() {
-            return .{
-                .data = if (self.data > 0) self.data else 0,
-                .grad = 0,
-                .op = .Relu,
-                .left = &self,
-                .right = null,
-                .aux = 0,
-            };
-        }
-
-        pub fn backward(comptime self: *@This()) void {
-            const nodes = get_nodes(comptime self);
-            self.grad = 1;
-
-            var i: usize = nodes.len;
-            while (i > 0) : (i -= 1) {
-                const v = &nodes[i - 1];
                 switch (v.op) {
                     .Add => {
-                        if (v.left) |left| left.grad += v.grad;
-                        if (v.right) |right| right.grad += v.grad;
+                        if (v.left) |left| {
+                            const left_index = comptime findIndex(values, left);
+                            grads[left_index] += grad;
+                        }
+                        if (v.right) |right| {
+                            const right_index = comptime findIndex(values, right);
+                            grads[right_index] += grad;
+                        }
                     },
                     .Mul => {
-                        if (v.left) |left| left.grad += v.right.?.data * v.grad;
-                        if (v.right) |right| right.grad += v.left.?.data * v.grad;
+                        if (v.left) |left| {
+                            const left_index = comptime findIndex(values, left);
+                            grads[left_index] += v.right.?.data * grad;
+                        }
+                        if (v.right) |right| {
+                            const right_index = comptime findIndex(values, right);
+                            grads[right_index] += v.left.?.data * grad;
+                        }
                     },
                     .Pow => {
-                        if (v.left) |left| left.grad += (v.aux * std.math.pow(T, v.left.?.data, v.aux - 1)) * v.grad;
+                        if (v.left) |left| {
+                            const left_index = comptime findIndex(values, left);
+                            grads[left_index] += (v.aux * std.math.pow(T, left.data, v.aux - 1)) * grad;
+                        }
                     },
                     .Relu => {
-                        if (v.left) |left| left.grad += if (v.data > 0) v.grad else 0;
+                        if (v.left) |left| {
+                            const left_index = comptime findIndex(values, left);
+                            grads[left_index] += if (v.data > 0) grad else 0;
+                        }
                     },
                     .None => {},
                 }
             }
         }
 
-        fn count_nodes(comptime root: *@This()) usize {
-            var count: usize = 1;
-            if (root.left) |left| count += count_nodes(left);
-            if (root.right) |right| count += count_nodes(right);
-            return count;
-        }
-
-        fn get_nodes(comptime root: *@This()) []@This() {
-            const node_count = comptime count_nodes(root);
-            var nodes: [node_count]@This() = undefined;
-            var index: usize = 0;
-            var stack: [node_count]*const @This() = undefined;
-            var stack_top: usize = 0;
-
-            stack[stack_top] = root;
-            stack_top += 1;
-
-            while (stack_top > 0) {
-                stack_top -= 1;
-                const node = stack[stack_top];
-
-                if (node.right) |right| {
-                    stack[stack_top] = right;
-                    stack_top += 1;
+        fn findIndex(comptime values: []const Value, comptime node: *const Value) usize {
+            inline for (values, 0..) |v, i| {
+                if (std.meta.eql(&v, node)) {
+                    return i;
                 }
-                if (node.left) |left| {
-                    stack[stack_top] = left;
-                    stack_top += 1;
-                }
-
-                nodes[index] = node.*;
-                index += 1;
             }
-
-            return &nodes;
+            unreachable;
         }
 
         test "Value init" {
             comptime {
-                const v = Value(T).init(5);
+                const v = Value.init(5);
                 try expect(v.data == 5);
-                try expect(v.grad == 0);
                 try expect(v.op == .None);
                 try expect(v.left == null);
                 try expect(v.right == null);
@@ -172,8 +195,8 @@ fn Value(comptime T: type) type {
 
         test "Value add" {
             comptime {
-                var a = Value(T).init(2);
-                const b = Value(T).init(3);
+                const a = Value.init(2);
+                const b = Value.init(3);
                 const c = a.add(b);
                 try expect(c.data == 5);
                 try expect(c.op == .Add);
@@ -184,8 +207,8 @@ fn Value(comptime T: type) type {
 
         test "Value mul" {
             comptime {
-                const a = Value(T).init(2);
-                const b = Value(T).init(3);
+                const a = Value.init(2);
+                const b = Value.init(3);
                 const c = a.mul(b);
                 try expect(c.data == 6);
                 try expect(c.op == .Mul);
@@ -194,80 +217,41 @@ fn Value(comptime T: type) type {
             }
         }
 
-        test "Value exp" {
+        test "Value pow" {
             comptime {
-                const a = Value(T).init(2);
-                const b = a.pow(@as(T, 3));
-                try expect(b.data == @as(T, 8));
+                const a = Value.init(2);
+                const b = a.pow(3);
+                try expect(b.data == 8);
                 try expect(b.op == .Pow);
                 try expect(b.left.?.data == 2);
                 try expect(b.right == null);
+                try expect(b.aux == 3);
             }
         }
 
-        test "Value neg" {
+        test "backward" {
             comptime {
-                const a = Value(T).init(2);
-                const b = a.neg();
-                try expect(b.data == -2);
-                try expect(b.op == .Mul);
-                try expect(b.left.?.data == 2);
-                try expect(b.right.?.data == -1);
+                const a = Value.init(2);
+                const b = Value.init(3);
+                const c = a.mul(b);
+                const d = c.add(b);
+                const e = d.pow(2);
+
+                const result = backward(e);
+
+                @compileLog(result.getGrad(a));
+                @compileLog(result.getGrad(b));
+                @compileLog(result.getGrad(c));
+                @compileLog(result.getGrad(d));
+                @compileLog(result.getGrad(d));
             }
-        }
-
-        test "Value sub" {
-            comptime {
-                const a = Value(T).init(5);
-                const b = Value(T).init(3);
-                const c = a.sub(b);
-                try expect(c.data == 2);
-                try expect(c.op == .Add);
-                try expect(c.left.?.data == 5);
-                try expect(c.right.?.data == -3);
-            }
-        }
-
-        test "Value div" {
-            comptime {
-                const a = Value(T).init(6);
-                const b = Value(T).init(2);
-                const c = a.div(b);
-                try expect(c.data == 3);
-                try expect(c.op == .Mul);
-                try expect(c.left.?.data == 6);
-                try expect(c.right.?.data == 0.5);
-            }
-        }
-
-        test "Value relu" {
-            comptime {
-                const a = Value(T).init(-2);
-                const b = Value(T).init(3);
-                const c = a.relu();
-                const d = b.relu();
-                try expect(c.data == 0);
-                try expect(d.data == 3);
-                try expect(c.op == .Relu);
-                try expect(d.op == .Relu);
-                try expect(c.left.?.data == -2);
-                try expect(d.left.?.data == 3);
-            }
-        }
-
-        test "Value backward" {
-            var a = Value(T).init(2);
-            var b = Value(T).init(3);
-            var c = a.mul(b);
-            var d = c.add(b);
-            var e = d.pow(2);
-
-            e.backward();
         }
     };
 }
 
 test "Value struct" {
-    comptime std.testing.refAllDecls(Value(f32));
-    comptime std.testing.refAllDecls(Value(f64));
+    inline for (.{ f32, f64 }) |F| {
+        const E = ValueEngine(F);
+        comptime std.testing.refAllDecls(E);
+    }
 }

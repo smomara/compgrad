@@ -5,10 +5,9 @@ const assert = std.debug.assert;
 
 fn Tensor(comptime T: type, comptime len: comptime_int) type {
     comptime {
-        switch (T) {
-            f32 => {},
-            f64 => {},
-            else => @compileError("Value must be instantiated with a float type"),
+        switch (@typeInfo(T)) {
+            .Float => {},
+            else => @compileError("Tensor must be instantiated with a float type"),
         }
     }
 
@@ -532,6 +531,8 @@ fn Tensor(comptime T: type, comptime len: comptime_int) type {
 }
 
 test "Value struct" {
+    comptime std.testing.refAllDecls(Tensor(f16, 4));
     comptime std.testing.refAllDecls(Tensor(f32, 4));
     comptime std.testing.refAllDecls(Tensor(f64, 4));
+    comptime std.testing.refAllDecls(Tensor(f128, 4));
 }

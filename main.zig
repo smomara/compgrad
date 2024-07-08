@@ -1,6 +1,7 @@
 const std = @import("std");
 const math = std.math;
 const expect = std.testing.expect;
+const assert = std.debug.assert;
 
 fn Value(comptime T: type) type {
     comptime {
@@ -15,8 +16,8 @@ fn Value(comptime T: type) type {
         data: T,
         grad: T,
         op: Op,
-        left: ?*const @This(),
-        right: ?*const @This(),
+        left: ?*@This(),
+        right: ?*@This(),
         aux: T,
 
         const Op = enum {
@@ -27,7 +28,7 @@ fn Value(comptime T: type) type {
             Relu,
         };
 
-        pub fn init(data: T) @This() {
+        pub fn init(data: T) Value(T) {
             return .{
                 .data = data,
                 .grad = 0,
@@ -38,124 +39,110 @@ fn Value(comptime T: type) type {
             };
         }
 
-        pub fn add(comptime self: @This(), comptime other: @This()) @This() {
+        pub fn add(comptime self: *Value(T), comptime other: *Value(T)) Value(T) {
             return .{
                 .data = self.data + other.data,
                 .grad = 0,
                 .op = .Add,
-                .left = &self,
-                .right = &other,
+                .left = self,
+                .right = other,
                 .aux = 0,
             };
         }
 
-        pub fn mul(comptime self: @This(), comptime other: @This()) @This() {
+        pub fn mul(comptime self: *Value(T), comptime other: *Value(T)) Value(T) {
             return .{
                 .data = self.data * other.data,
                 .grad = 0,
                 .op = .Mul,
-                .left = &self,
-                .right = &other,
+                .left = self,
+                .right = other,
                 .aux = 0,
             };
         }
 
-        pub fn pow(comptime self: @This(), comptime exponent: T) @This() {
+        pub fn pow(comptime self: *Value(T), comptime exponent: T) Value(T) {
             return .{
                 .data = std.math.pow(T, self.data, exponent),
                 .grad = 0,
                 .op = .Pow,
-                .left = &self,
+                .left = self,
                 .right = null,
                 .aux = exponent,
             };
         }
 
-        pub fn neg(comptime self: @This()) @This() {
-            return self.mul(init(-1));
+        pub fn neg(comptime self: *Value(T)) Value(T) {
+            var one_neg = init(-1);
+            return self.mul(&one_neg);
         }
 
-        pub fn sub(comptime self: @This(), comptime other: @This()) @This() {
-            return self.add(other.neg());
+        pub fn sub(comptime self: *Value(T), comptime other: *Value(T)) Value(T) {
+            var other_neg = other.neg();
+            return self.add(&other_neg);
         }
 
-        pub fn div(comptime self: @This(), comptime other: @This()) @This() {
-            return self.mul(other.pow(-1));
+        pub fn div(comptime self: *Value(T), comptime other: *Value(T)) Value(T) {
+            var other_inv = other.pow(-1);
+            return self.mul(&other_inv);
         }
 
-        pub fn relu(comptime self: @This()) @This() {
+        pub fn relu(comptime self: *Value(T)) Value(T) {
             return .{
                 .data = if (self.data > 0) self.data else 0,
                 .grad = 0,
                 .op = .Relu,
-                .left = &self,
+                .left = self,
                 .right = null,
                 .aux = 0,
             };
         }
 
-        pub fn backward(comptime self: *@This()) void {
-            const nodes = get_nodes(comptime self);
+        pub fn backward(comptime self: *Value(T)) void {
             self.grad = 1;
-
-            var i: usize = nodes.len;
-            while (i > 0) : (i -= 1) {
-                const v = &nodes[i - 1];
-                switch (v.op) {
-                    .Add => {
-                        if (v.left) |left| left.grad += v.grad;
-                        if (v.right) |right| right.grad += v.grad;
-                    },
-                    .Mul => {
-                        if (v.left) |left| left.grad += v.right.?.data * v.grad;
-                        if (v.right) |right| right.grad += v.left.?.data * v.grad;
-                    },
-                    .Pow => {
-                        if (v.left) |left| left.grad += (v.aux * std.math.pow(T, v.left.?.data, v.aux - 1)) * v.grad;
-                    },
-                    .Relu => {
-                        if (v.left) |left| left.grad += if (v.data > 0) v.grad else 0;
-                    },
-                    .None => {},
-                }
-            }
+            backprop(self);
         }
 
-        fn count_nodes(comptime root: *@This()) usize {
-            var count: usize = 1;
-            if (root.left) |left| count += count_nodes(left);
-            if (root.right) |right| count += count_nodes(right);
-            return count;
-        }
-
-        fn get_nodes(comptime root: *@This()) []@This() {
-            const node_count = comptime count_nodes(root);
-            var nodes: [node_count]@This() = undefined;
-            var index: usize = 0;
-            var stack: [node_count]*const @This() = undefined;
-            var stack_top: usize = 0;
-
-            stack[stack_top] = root;
-            stack_top += 1;
-
-            while (stack_top > 0) {
-                stack_top -= 1;
-                const node = stack[stack_top];
-
-                if (node.right) |right| {
-                    stack[stack_top] = right;
-                    stack_top += 1;
-                }
-                if (node.left) |left| {
-                    stack[stack_top] = left;
-                    stack_top += 1;
-                }
-
-                nodes[index] = node.*;
-                index += 1;
+        fn backprop(comptime node: *Value(T)) void {
+            switch (node.op) {
+                .Add => {
+                    if (node.left) |left| {
+                        left.grad += node.grad;
+                        backprop(left);
+                    }
+                    if (node.right) |right| {
+                        right.grad += node.grad;
+                        backprop(right);
+                    }
+                },
+                .Mul => {
+                    if (node.left) |left| {
+                        if (node.right) |right| {
+                            left.grad += right.data * node.grad;
+                            backprop(left);
+                        }
+                    }
+                    if (node.right) |right| {
+                        if (node.left) |left| {
+                            right.grad += left.data * node.grad;
+                            backprop(right);
+                        }
+                    }
+                },
+                .Pow => {
+                    if (node.left) |left| {
+                        left.grad += (node.aux * std.math.pow(T, left.data, node.aux - 1)) * node.grad;
+                        backprop(left);
+                    }
+                },
+                .Relu => {
+                    if (node.left) |left| {
+                        left.grad += if (node.data > 0) node.grad else 0;
+                        backprop(left);
+                    }
+                },
+                .None => {},
             }
-
-            return &nodes;
         }
 
         test "Value init" {
@@ -173,8 +160,8 @@ fn Value(comptime T: type) type {
         test "Value add" {
             comptime {
                 var a = Value(T).init(2);
-                const b = Value(T).init(3);
-                const c = a.add(b);
+                var b = Value(T).init(3);
+                const c = a.add(&b);
                 try expect(c.data == 5);
                 try expect(c.op == .Add);
                 try expect(c.left.?.data == 2);
@@ -184,9 +171,9 @@ fn Value(comptime T: type) type {
 
         test "Value mul" {
             comptime {
-                const a = Value(T).init(2);
-                const b = Value(T).init(3);
-                const c = a.mul(b);
+                var a = Value(T).init(2);
+                var b = Value(T).init(3);
+                const c = a.mul(&b);
                 try expect(c.data == 6);
                 try expect(c.op == .Mul);
                 try expect(c.left.?.data == 2);
@@ -196,7 +183,7 @@ fn Value(comptime T: type) type {
 
         test "Value exp" {
             comptime {
-                const a = Value(T).init(2);
+                var a = Value(T).init(2);
                 const b = a.pow(@as(T, 3));
                 try expect(b.data == @as(T, 8));
                 try expect(b.op == .Pow);
@@ -207,7 +194,7 @@ fn Value(comptime T: type) type {
 
         test "Value neg" {
             comptime {
-                const a = Value(T).init(2);
+                var a = Value(T).init(2);
                 const b = a.neg();
                 try expect(b.data == -2);
                 try expect(b.op == .Mul);
@@ -218,9 +205,9 @@ fn Value(comptime T: type) type {
 
         test "Value sub" {
             comptime {
-                const a = Value(T).init(5);
-                const b = Value(T).init(3);
-                const c = a.sub(b);
+                var a = Value(T).init(5);
+                var b = Value(T).init(3);
+                const c = a.sub(&b);
                 try expect(c.data == 2);
                 try expect(c.op == .Add);
                 try expect(c.left.?.data == 5);
@@ -230,9 +217,9 @@ fn Value(comptime T: type) type {
 
         test "Value div" {
             comptime {
-                const a = Value(T).init(6);
-                const b = Value(T).init(2);
-                const c = a.div(b);
+                var a = Value(T).init(6);
+                var b = Value(T).init(2);
+                const c = a.div(&b);
                 try expect(c.data == 3);
                 try expect(c.op == .Mul);
                 try expect(c.left.?.data == 6);
@@ -242,8 +229,8 @@ fn Value(comptime T: type) type {
 
         test "Value relu" {
             comptime {
-                const a = Value(T).init(-2);
-                const b = Value(T).init(3);
+                var a = Value(T).init(-2);
+                var b = Value(T).init(3);
                 const c = a.relu();
                 const d = b.relu();
                 try expect(c.data == 0);
@@ -256,13 +243,47 @@ fn Value(comptime T: type) type {
         }
 
         test "Value backward" {
-            var a = Value(T).init(2);
-            var b = Value(T).init(3);
-            var c = a.mul(b);
-            var d = c.add(b);
-            var e = d.pow(2);
+            comptime {
+                var a = Value(T).init(2);
+                var b = Value(T).init(3);
+                var c = a.mul(&b);
+                var d = c.add(&b);
+                var e = d.pow(2);
 
-            e.backward();
+                e.backward();
+
+                // expected values obtained using pytorch
+                //
+                //     import torch
+                //
+                //     torch.set_grad_enabled(True)
+                //
+                //     a = torch.tensor(2.0, requires_grad=True)
+                //     b = torch.tensor(3.0, requires_grad=True)
+                //
+                //     c = a * b
+                //     c.retain_grad()
+                //
+                //     d = c + b
+                //     d.retain_grad()
+                //
+                //     e = d ** 2
+                //     e.retain_grad()
+                //
+                //     e.backward()
+                //
+                //     print(a.grad.item()) # 54
+                //     print(b.grad.item()) # 54
+                //     print(c.grad.item()) # 18
+                //     print(d.grad.item()) # 18
+                //     print(e.grad.item()) # 1
+
+                try expect(a.grad == 54);
+                try expect(b.grad == 54);
+                try expect(c.grad == 18);
+                try expect(d.grad == 18);
+                try expect(e.grad == 1);
+            }
         }
     };
 }
